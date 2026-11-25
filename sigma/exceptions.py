@@ -115,6 +115,39 @@ class SigmaFeatureNotSupportedByBackendError(SigmaError):
     pass
 
 
+class SigmaUnsupportedFeatureError(SigmaFeatureNotSupportedByBackendError):
+    """Sigma feature is not supported by a backend.
+
+    This exception carries structured information about the affected feature so callers can
+    report *what* was lost instead of only getting a free-form error message.
+    """
+
+    def __init__(
+        self,
+        feature: str,
+        backend: str | None = None,
+        reason: str | None = None,
+        source: SigmaRuleLocation | None = None,
+        *args: Any,
+        **kwargs: Any,
+    ):
+        self.feature = feature
+        self.backend = backend
+        self.reason = reason or feature
+        message = f"Feature '{feature}' is not supported"
+        if backend:
+            message += f" by backend '{backend}'"
+        if reason:
+            message += f": {reason}"
+        super().__init__(message, *args, source=source, **kwargs)
+
+
+class SigmaBackendConsistencyError(SigmaBackendError):
+    """Conversion results of multiple backends are not semantically consistent."""
+
+    pass
+
+
 class SigmaModifierError(SigmaError):
     """Error in Sigma rule value modifier"""
 

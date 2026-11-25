@@ -1,0 +1,73 @@
+"""Compatibility import location for the unified multi-backend interface."""
+
+from sigma.conversion.capabilities import (
+    BackendCapabilities,
+    Features,
+    detect_unsupported_features,
+)
+from sigma.conversion.multi import (
+    BackendGroup,
+    BackendSpec,
+    BackendConverter,
+    CompositeBackend,
+    FieldMapper,
+    FieldMapping,
+    MultiBackend,
+    MultiBackendConverter,
+    SigmaMultiBackend,
+    UnifiedBackend,
+    UnsupportedPolicy,
+    convert,
+    convert_multi,
+    convert_rule_to_backends,
+    convert_to_backends,
+    convert_to_multiple_backends,
+    field_mapping_pipeline,
+)
+from sigma.conversion.result import (
+    BackendConversionResult,
+    MultiBackendResult,
+    SemanticFingerprint,
+    UnsupportedFeature,
+    merge_unsupported_features,
+)
+from sigma.conversion.semantic import (
+    inverse_field_mapping,
+    semantic_digest,
+    semantic_model,
+    semantic_models,
+    semantically_equivalent,
+)
+
+__all__ = [
+    "BackendCapabilities",
+    "Features",
+    "detect_unsupported_features",
+    "BackendGroup",
+    "BackendSpec",
+    "BackendConverter",
+    "CompositeBackend",
+    "FieldMapper",
+    "FieldMapping",
+    "MultiBackend",
+    "MultiBackendConverter",
+    "SigmaMultiBackend",
+    "UnifiedBackend",
+    "UnsupportedPolicy",
+    "convert",
+    "convert_multi",
+    "convert_rule_to_backends",
+    "convert_to_backends",
+    "convert_to_multiple_backends",
+    "field_mapping_pipeline",
+    "BackendConversionResult",
+    "MultiBackendResult",
+    "SemanticFingerprint",
+    "UnsupportedFeature",
+    "merge_unsupported_features",
+    "inverse_field_mapping",
+    "semantic_digest",
+    "semantic_model",
+    "semantic_models",
+    "semantically_equivalent",
+]

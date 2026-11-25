@@ -25,6 +25,9 @@ class ConversionState:
 
     deferred: list[DeferredQueryExpression] = field(default_factory=list)
     processing_state: Mapping[str, Any] = field(default_factory=dict)
+    # Explicit descriptions of features that could not be represented by the backend. These are
+    # recorded instead of silently dropping affected query parts.
+    unsupported: list[Any] = field(default_factory=list, compare=False, repr=False)
     # Deferred expressions that were returned as operands of AND/OR conditions. They are applied
     # as filters on the main query result, which is not equivalent below a negation.
     combined_deferred: list[DeferredQueryExpression] = field(
@@ -33,6 +36,14 @@ class ConversionState:
 
     def add_deferred_expression(self, deferred: DeferredQueryExpression) -> None:
         self.deferred.append(deferred)
+
+    def add_unsupported(self, feature: Any) -> None:
+        """Record an unsupported or degraded feature."""
+        self.unsupported.append(feature)
+
+    def has_unsupported(self) -> bool:
+        """Return True when unsupported features were recorded."""
+        return len(self.unsupported) > 0
 
     def add_combined_deferred_expressions(self, operands: Iterable[Any]) -> None:
         """Record deferred expressions returned as operands of an AND/OR condition."""

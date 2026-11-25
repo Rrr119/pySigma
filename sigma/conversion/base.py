@@ -17,7 +17,17 @@ from sigma.conditions import (
     ConditionOR,
     ConditionValueExpression,
 )
+from sigma.conversion.capabilities import (
+    BackendCapabilities,
+    detect_unsupported_features,
+    feature_for_value,
+)
 from sigma.conversion.deferred import DeferredQueryExpression
+from sigma.conversion.result import (
+    BackendConversionResult,
+    UnsupportedFeature,
+    merge_unsupported_features,
+)
 from sigma.conversion.state import ConversionState
 from sigma.correlations import (
     CorrelationConditionAND,
@@ -139,6 +149,11 @@ class Backend(ABC):
     collect_errors: bool = False
     errors: list[tuple[SigmaRule, SigmaError]]
 
+    # Optional explicit capability declaration. If unset, capabilities are derived from the
+    # backend's class variables. Backends can override individual values:
+    # capabilities = BackendCapabilities(regex=False, cidr_native=False)
+    capabilities: ClassVar[BackendCapabilities | None] = None
+
     # Perform finalization on all queries used in a correl
     finalize_correlation_subqueries = False
 
@@ -171,8 +186,97 @@ class Backend(ABC):
     ):
         self.processing_pipeline: ProcessingPipeline | None = processing_pipeline
         self.errors = []
+        self.unsupported: list[UnsupportedFeature] = []
         self.collect_errors: bool = collect_errors
         self.backend_options: dict[str, dict[str, Any]] = backend_options
+
+    @property
+    def backend_identifier(self) -> str:
+        """Stable identifier of the backend used in reports and multi-backend results."""
+        return str(getattr(self, "identifier", None) or self.name)
+
+    def get_capabilities(self) -> BackendCapabilities:
+        """
+        Return the effective capability description of this backend.
+
+        Text-based backends are inspected automatically. Other backends can set the
+        ``capabilities`` class attribute to declare supported features explicitly.
+        """
+        return BackendCapabilities.from_backend(self)
+
+    def supports(self, feature: str) -> bool:
+        """Return whether the backend supports a feature identifier from ``Features``."""
+        return self.get_capabilities().supports(feature)
+
+    def find_unsupported_features(
+        self, rule: SigmaRule | SigmaCorrelationRule
+    ) -> list[UnsupportedFeature]:
+        """
+        Return explicit annotations for features of ``rule`` that this backend can't represent.
+
+        The rule must already have the processing pipeline applied.
+        """
+        return detect_unsupported_features(
+            rule,
+            self.get_capabilities(),
+            backend=self.backend_identifier,
+        )
+
+    get_unsupported_features = find_unsupported_features
+
+    @property
+    def capability_report(self) -> BackendCapabilities:
+        """Alias for :meth:`get_capabilities`."""
+        return self.get_capabilities()
+
+    @property
+    def unsupported_feature_names(self) -> list[str]:
+        """Distinct feature names recorded during the last conversion."""
+        return list(dict.fromkeys(feature.feature for feature in self.unsupported))
+
+    def convert_with_report(
+        self,
+        rule_collection: SigmaCollection,
+        output_format: str | None = None,
+        correlation_method: str | None = None,
+        callback: (
+            Callable[[SigmaRule | SigmaCorrelationRule, str | None, int, Any, Any], Any] | None
+        ) = None,
+    ) -> BackendConversionResult:
+        """
+        Convert rules and return a structured report including unsupported feature annotations.
+
+        The normal :meth:`convert` method keeps its existing return type for backward
+        compatibility. Use this method when callers need to know *what* a backend could not
+        represent.
+        """
+        from sigma.conversion.multi import convert_backend_with_report
+
+        return convert_backend_with_report(
+            self,
+            rule_collection,
+            output_format=output_format,
+            correlation_method=correlation_method,
+            callback=callback,
+        )
+
+    def convert_rule_with_report(
+        self,
+        rule: SigmaRule | SigmaCorrelationRule,
+        output_format: str | None = None,
+        callback: (
+            Callable[[SigmaRule | SigmaCorrelationRule, str | None, int, Any, Any], Any] | None
+        ) = None,
+    ) -> BackendConversionResult:
+        """Convert a single rule and return a structured report."""
+        from sigma.conversion.multi import convert_backend_with_report
+
+        return convert_backend_with_report(
+            self,
+            SigmaCollection([rule]),
+            output_format=output_format,
+            callback=callback,
+        )
 
     def init_processing_pipeline(self, output_format: str | None = None) -> None:
         """
@@ -217,6 +321,7 @@ class Backend(ABC):
             Converted data structure (usually queries)
         """
         self.init_processing_pipeline(output_format)
+        self.unsupported = []
         rule_collection.resolve_rule_references()
         queries = [
             query
@@ -267,8 +372,16 @@ class Backend(ABC):
 
             # 2. Convert conditions
             error_state = "converting"
+            try:
+                unsupported_features = self.find_unsupported_features(rule)
+            except Exception:
+                # Capability reporting must never prevent conversion of an otherwise valid rule.
+                unsupported_features = []
             states: list[ConversionState] = [
-                ConversionState(processing_state=dict(self.last_processing_pipeline.state))
+                ConversionState(
+                    processing_state=dict(self.last_processing_pipeline.state),
+                    unsupported=list(unsupported_features),
+                )
                 for _ in rule.detection.parsed_condition
             ]
             queries = []
@@ -300,6 +413,8 @@ class Backend(ABC):
             )
             rule.set_conversion_result(finalized_queries)
             rule.set_conversion_states(states)
+            self.unsupported.extend(feature for state in states for feature in state.unsupported)
+            self.unsupported = merge_unsupported_features(self.unsupported)
             if rule._output:
                 return finalized_queries
             else:
@@ -307,9 +422,29 @@ class Backend(ABC):
         except SigmaError as e:
             if self.collect_errors:
                 self.errors.append((rule, e))
+                self.unsupported.append(
+                    UnsupportedFeature.from_exception(e, backend=self.backend_identifier, rule=rule)
+                )
                 return []
             else:
                 raise e
+        except NotImplementedError as e:
+            # Unsupported features implemented as NotImplementedError are converted into a
+            # Sigma error when errors are collected, so callers get an explicit annotation.
+            if self.collect_errors:
+                self.errors.append(
+                    (
+                        rule,
+                        SigmaFeatureNotSupportedByBackendError(
+                            str(e), source=getattr(rule, "source", None)
+                        ),
+                    )
+                )
+                self.unsupported.append(
+                    UnsupportedFeature.from_exception(e, backend=self.backend_identifier, rule=rule)
+                )
+                return []
+            raise
         except (
             Exception
         ) as e:  # enrich all other exceptions with Sigma-specific context information
@@ -737,8 +872,15 @@ class Backend(ABC):
         # Convert the correlation rule depending on its type
         raw_queries = correlation_methods[rule.type](rule, output_format, method)
 
+        try:
+            unsupported_features = self.find_unsupported_features(rule)
+        except Exception:
+            unsupported_features = []
         states = [
-            ConversionState(processing_state=dict(self.last_processing_pipeline.state))
+            ConversionState(
+                processing_state=dict(self.last_processing_pipeline.state),
+                unsupported=list(unsupported_features),
+            )
             for _ in raw_queries
         ]
 
@@ -767,6 +909,8 @@ class Backend(ABC):
         ]
         rule.set_conversion_result(finalized_queries)
         rule.set_conversion_states(states)
+        self.unsupported.extend(feature for state in states for feature in state.unsupported)
+        self.unsupported = merge_unsupported_features(self.unsupported)
         if rule._output:
             return finalized_queries
         else:
@@ -1606,6 +1750,28 @@ class TextQueryBackend(Backend):
             raise NotImplementedError("Group expressions are not supported by the backend")
         return self.group_expression.format(expr=expr)
 
+    def _record_dropped_conditions(
+        self,
+        converted_args: list[Any],
+        cond: ConditionItem,
+        state: ConversionState,
+    ) -> None:
+        """Record operands that converted to nothing instead of dropping them silently."""
+        for converted in converted_args:
+            if converted is None:
+                state.add_unsupported(
+                    UnsupportedFeature(
+                        feature="condition",
+                        reason=(
+                            "operand of "
+                            + cond.__class__.__name__
+                            + " converted to no query expression and was dropped"
+                        ),
+                        backend=self.backend_identifier,
+                        source=cond.source,
+                    )
+                )
+
     def convert_condition_or(
         self, cond: ConditionOR, state: ConversionState
     ) -> str | DeferredQueryExpression | None:
@@ -1626,6 +1792,7 @@ class TextQueryBackend(Backend):
                 )
                 for arg in cond.args
             ]
+            self._record_dropped_conditions(converted_args, cond, state)
             state.add_combined_deferred_expressions(converted_args)
             args = [
                 converted
@@ -1716,6 +1883,7 @@ class TextQueryBackend(Backend):
                 )
                 for arg in cond.args
             ]
+            self._record_dropped_conditions(converted_args, cond, state)
             state.add_combined_deferred_expressions(converted_args)
             args = [
                 converted
@@ -2364,7 +2532,25 @@ class TextQueryBackend(Backend):
         cond: ConditionItem | ConditionFieldEqualsValueExpression | ConditionValueExpression | None,
         state: ConversionState,
     ) -> str | DeferredQueryExpression:
-        return cast(str | DeferredQueryExpression, super().convert_condition(cond, state))
+        result = cast(str | DeferredQueryExpression, super().convert_condition(cond, state))
+        if result is None and isinstance(
+            cond, (ConditionFieldEqualsValueExpression, ConditionValueExpression)
+        ):
+            state.add_unsupported(
+                UnsupportedFeature(
+                    feature=feature_for_value(cond.value),
+                    reason="backend returned no query expression for this condition",
+                    backend=self.backend_identifier,
+                    source=getattr(cond, "source", None),
+                    field_name=(
+                        cond.field
+                        if isinstance(cond, ConditionFieldEqualsValueExpression)
+                        else None
+                    ),
+                    value=str(cond.value),
+                )
+            )
+        return result
 
     # Correlation query conversion
     # The following methods are used to convert Sigma correlation rules into queries. The conversion
@@ -3024,3 +3210,21 @@ class TextQueryBackend(Backend):
             str | DeferredQueryExpression,
             super().finalize_query(rule, query, index, state, output_format),
         )
+
+
+def __getattr__(name: str) -> Any:
+    """Lazily expose the unified multi-backend API from the traditional backend module."""
+    if name in {
+        "BackendGroup",
+        "BackendSpec",
+        "CompositeBackend",
+        "MultiBackend",
+        "MultiBackendConverter",
+        "MultiBackendResult",
+        "SigmaMultiBackend",
+        "UnifiedBackend",
+    }:
+        from sigma.conversion import multi, result
+
+        return getattr(multi, name, None) or getattr(result, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

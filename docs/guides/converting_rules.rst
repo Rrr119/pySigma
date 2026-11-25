@@ -278,3 +278,60 @@ Here is a complete example showing the typical pySigma workflow:
    # 5. Use the generated queries
    for query in queries:
        print(query)
+
+Converting to Multiple Backends
+-------------------------------
+
+If the same rule set must be deployed to several products, ``UnifiedBackend`` converts it with
+all configured backends in one call. Every backend gets its own deep copy of the rules, so
+backend-specific pipelines and field mappings can't leak into another backend.
+
+.. code-block:: python
+
+   from sigma.conversion.multi import UnifiedBackend
+
+   unified = UnifiedBackend(
+       {
+           "splunk": SplunkBackend(),
+           "elastic": ElasticsearchBackend(),
+           "sentinel": MicrosoftSentinelBackend(),
+       },
+       field_mappings={
+           "splunk": {"CommandLine": "cmdline"},
+           "elastic": {"CommandLine": "process.command_line"},
+           "sentinel": {"CommandLine": "ProcessCommandLine"},
+       },
+   )
+
+   results = unified.convert(collection)
+
+   print(results["splunk"].queries)
+   print(results["elastic"].queries)
+   print(results["sentinel"].queries)
+
+The per-backend pipelines configured on the backend instances are still applied. Additional
+pipelines can be passed globally with ``pipeline=...``, per backend with the ``pipelines``
+mapping or through :class:`~sigma.conversion.multi.BackendSpec`.
+
+Explicit Unsupported Feature Reporting
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The result of every backend contains an ``unsupported`` list. Features that can't be represented
+exactly are recorded there instead of being dropped silently. ``severity="degraded"`` means the
+backend generated an approximation (for example CIDR expressions without native support are
+expanded to wildcard string matches). ``severity="error"`` means the affected query part could
+not be generated.
+
+.. code-block:: python
+
+   result = results["sentinel"]
+
+   for feature in result.unsupported:
+       print(feature.feature, feature.reason, feature.is_degraded)
+
+   # Raises SigmaBackendConsistencyError if the backends don't represent the same logic.
+   results.assert_semantically_consistent()
+
+The ``semantics`` attribute contains a normalized, backend-independent representation of the
+detection logic. Field names that were renamed by pipelines are mapped back to their Sigma names,
+which makes the semantic models of different backends comparable.

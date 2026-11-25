@@ -1,0 +1,17 @@
+{
+  "root": "/home/dev/feedback/uid38849",
+  "B": "/home/dev/feedback/uid38849",
+  "sha": "a271708e087d1b4f4257a3741007983df3a9b847",
+  "wslDistro": "Ubuntu-26.04",
+  "source": {
+    "owner": "SigmaHQ",
+    "repo": "pySigma",
+    "sha": "a271708e087d1b4f4257a3741007983df3a9b847"
+  },
+  "fork": {
+    "owner": "Rrr119",
+    "repo": "pySigma",
+    "cloneUrl": "https://github.com/Rrr119/pySigma.git"
+  },
+  "at": "2026-11-25T22:24:09.889Z"
+}
